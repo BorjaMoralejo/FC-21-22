@@ -5,11 +5,18 @@
 #include <unistd.h>
 #include <time.h>
 #include "aes.h"
+#include "iaesni.h"
 
 #define BLOCK_SIZE 16
 #define AES_KEY_LENGTH 32
 #define KEY_LENGTH 32 
-#define RANGE 256
+
+#define SEARCH_RANGE_K_LOW 0x30
+#define SEARCH_RANGE_K_HIGH 0x7a
+
+#define SEARCH_RANGE_M_LOW 0x00
+#define SEARCH_RANGE_M_HIGH 0xff
+
 
 uint8_t aux[BLOCK_SIZE];
 
@@ -93,80 +100,147 @@ void TiempoEjec (char *Texto, struct timespec *t0, struct timespec *t1)
  printf ("%s = %1.3f ms\n\n", Texto, tej*1000);
 }
 
+/*
+ * Modifica la key utilizando la mascara y pasa por todas las combinaciones posibles (ASCII)
+ * Devuelve -1 al terminar con todas las combinaciones, 0 en el caso contrario
+ */
+int redo_key(uint8_t *key, int64_t *key_mask, int64_t n_key_mask){
+	
+	int k = 0;
+	char check = 0;
+	while(check == 0 && k < n_key_mask)
+	{
+		check = 1;
+		// Incrementando entre los valores ASCII
+		if(key[ key_mask[k]] == SEARCH_RANGE_K_HIGH)  // Comprueba si ha llegado a rango maximo
+		{
+			key[key_mask[k]] = SEARCH_RANGE_K_LOW; 
+			k++;
+			check = 0;
+		}else key[ key_mask[k] ]++;
+	}
+
+	if(k == n_key_mask) return -1;
+
+	return 0;	
+}
+
+/*
+ * Avanza al siguiente combinacion en el mensaje.
+ * Devuelve -1 al ciclar entre todas las combinaciones posibles
+ * Devuelve 0 si aun hay combinaciones
+ */
+int redo_plaintext(int64_t n_plaintext_mask, int64_t *plaintext_mask, uint8_t *plain_text){
+
+	int check = 0;
+	int k = 0;
+	while(check == 0 && k < n_plaintext_mask)
+	{
+		check = 1;
+		// Si ha llegado al rango maximo, no debe incrementar este si no el siguiente elemento
+		if(plain_text[plaintext_mask[k]] == SEARCH_RANGE_M_HIGH)
+		{
+			plain_text[plaintext_mask[k]] = SEARCH_RANGE_M_LOW;
+			k++;
+			check = 0;
+		}else
+			plain_text[plaintext_mask[k]]++;
+		}
+	if(k == n_plaintext_mask) return -1; // Ha terminado de buscar todas las combinaciones
+
+	return 0;
+}
+
+/*
+ * Muestra por pantalla la key y m0 que se han encontrado
+ */ 
+void print_key_plaintext(uint8_t *key, int64_t *key_mask, int64_t n_key_mask, uint8_t *plain_text){
+	int k;
+
+	printf("La key es: ");
+	for(k = 0; k < 32; k++)
+		printf("%c", key[k]);
+	printf("\n");
+
+	printf("key huecos: ");
+	for(k = 0; k < n_key_mask; k++)
+		printf("%c", key[key_mask[k]]);
+	printf("\n");
+			
+	printf("m0: ");
+	for(k = 0; k < 16; k++)
+		printf("%02X", plain_text[k]);
+	printf("\n");
+}
+
+
 void search(int64_t n_key_mask, int64_t *key_mask, int64_t n_plaintext_mask, int64_t *plaintext_mask, uint8_t *key, uint8_t *plain_text, uint8_t *cypher_text)
 {	
 	struct AES_ctx ctx;
-	int i,j,k;
+	int i,j,n;
 	char iv[16] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
 	char iv_c[16];
-	char plain_text_c[16];
-	char check;
-
-	unsigned int times = 1;
+	char plain_text_c[32];
+	char result[64];
+	char end = 0;
 	struct timespec t0;
 	struct timespec t1;
 	clock_gettime(CLOCK_MONOTONIC, &t0);
-
+	
 
 
 	// Inicializando clave a comienzo de busqueda (todo 0 en ascii)
 	for(i = 0; i < n_key_mask; i++)
-	{
-		key[key_mask[i]] = 0x30;
-		times*=256;
-	}
-
-	printf("\n");
-	for(i = 0; i < times; i++)
-	{
-		check = 1;
-		k = 0;
+		key[key_mask[i]] = SEARCH_RANGE_K_LOW; // 0x30
 	
-		memcpy(iv_c, iv, 16);
-		memcpy(plain_text_c, plain_text, 16);
+	for(i = 0; i < n_plaintext_mask; i++)
+		plain_text[plaintext_mask[i]] = SEARCH_RANGE_M_LOW; // 0x30
+	// Inicializando Iv
+	memcpy(iv_c, iv, 16);
 
+	// Comprobando todas las combinaciones posibles hasta que las encuentre, no lo encuentre o aborte el programa
+	while(end == 0)
+	{
+		// La funcion de AES_CBC_encrypt sobrescribe el plaintext_c con el m cifrado, se tiene que reponer
+		memcpy(plain_text_c, plain_text, 16); 
+		
+		// Encriptando usando key plain_text e iv
 		#ifdef AESNI
-
+        	enc_256_CBC(plain_text_c, result, key, iv_c, 4);
+		memcpy(plain_text_c, result, 16); // Esto es para no cambiar por abajo las funciones
 		#else
+		memcpy(iv_c, iv, 16);
 		AES_init_ctx_iv(&ctx, key, iv_c);
 		AES_CBC_encrypt_buffer(&ctx, plain_text_c, 16);
 		#endif
-		// Printeando el texto recien cifrado y el original
-		printf("cypher_text: ");
 
-		for(j = 0; j < 16; j++)
-			printf("%02X", 0x000000FF & plain_text_c[j]);
-		printf("\t");
-		for(j = 0; j < 16; j++)
-			printf("%02X", 0x000000FF & cypher_text[j]);
-		printf("\n");
-
-		// Comprobar la clave
+		// Comprobar la parte cifrada, si coinciden, se acaba
 		if ( memcmp(plain_text_c, cypher_text, 16) == 0)
-		{
-			printf("La key es: %02X%02X%02X%02X" , key[28], key[29], key[30], key[31]);
-			break;
-		}
+			end = 1;
+		else {
+			// Cambiando la key a buscar
+			end = redo_key(key, key_mask, n_key_mask);
 
-		printf("\n");
-		for(k = 3; k >= 0; k--)
-			printf("%02X",key[28 +k]);
-		printf("\n");
-
-		// Cambiando la key a buscar
-		k = 0;
-		check = 0;
-		while(check == 0)
-		{
-			check = 1;
-			if(key[ key_mask[k]] == 0x7A)
+			if(end == -1 && n_plaintext_mask != 0) 
 			{
-				key[key_mask[k]] = 0x30;
-				k++;
-				check = 0;
-			}else key[ key_mask[k] ]++;
+				// Resetear key y ciclar con el mensaje
+				for(i = 0; i < n_key_mask; i++)
+					key[key_mask[i]] = SEARCH_RANGE_K_LOW;
+				// Cambiando el plaintext
+				end = redo_plaintext(n_plaintext_mask, plaintext_mask, plain_text);
+			}
 		}
+		/*
+		for(i = 0; i < n_key_mask; i++)
+			printf("%02X", key[key_mask[i]]);
+		printf("\n");
+		*/
 	}
+
+	if(end == 1)
+		print_key_plaintext(key, key_mask, n_key_mask, plain_text);
+	else if(end == -1)
+		printf("No se ha encontrado la clave y se han acabado las combinaciones");
 
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	TiempoEjec("Tiempo: ", &t0, &t1);
@@ -208,17 +282,13 @@ int main(int argc, char *argv[])
     parse(BLOCK_SIZE, argv[5], cypher_text);
     printf("Key: ");
     print_hex(key, AES_KEY_LENGTH);
-    printf("Key: %s\n", argv[0]);
     printf("Plain text: ");
-    printf("Key: %s\n", argv[0]);
     print_hex(plain_text, BLOCK_SIZE);
     printf("Cypher text: ");
-    printf("Key: %s\n", argv[0]);
     print_hex(cypher_text, BLOCK_SIZE);
     printf("Key mask length: %ld\n", n_key_mask);
-    printf("Key: %s\n", argv[0]);
     printf("Plaintext mask length: %ld\n", n_plaintext_mask);
-
+    printf("\n\n");
     search(n_key_mask, key_mask, n_plaintext_mask, plaintext_mask, key, plain_text, cypher_text);
 	
 }

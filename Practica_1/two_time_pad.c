@@ -1,13 +1,18 @@
+/* Fundamentos de Ciberseguridad
+ * Practica 1
+ *
+ * two_time_pad.c
+ *
+ * Autor: Borja Moralejo Tobajas
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define N 14
 
-void contar_espacios(tam, espacio, c_x)
-unsigned char *tam;
-unsigned char **espacio;
-unsigned char **c_x;
+void contar_espacios(unsigned char *tam, unsigned char **espacio, unsigned char **c_x)
 {
 	int i, j, k;
 	int min;
